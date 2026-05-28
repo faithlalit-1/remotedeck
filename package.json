@@ -23,7 +23,9 @@
     "electron:build": "npm run build && electron-builder",
     "electron:build:mac": "npm run build && electron-builder --mac",
     "electron:build:win": "npm run build && electron-builder --win",
-    "electron:build:linux": "npm run build && electron-builder --linux"
+    "electron:build:linux": "npm run build && electron-builder --linux",
+    "deploy:desktop": "node scripts/deploy-desktop.mjs",
+    "watch:desktop": "node scripts/watch-deploy.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -42,6 +44,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "chokidar": "^5.0.0",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^39.1.0",

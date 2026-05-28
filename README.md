@@ -56,6 +56,25 @@ npm run electron:build:linux     # Linux (AppImage)
 
 Built artifacts land in `release/`.
 
+## Keep the Desktop launcher in sync with your code
+
+The `.app` on your Desktop is a packaged build — it does **not** auto-update
+when you edit code. Two helpers handle that:
+
+```bash
+npm run deploy:desktop     # one-shot: rebuild + replace ~/Desktop/RemoteDeck.app
+npm run watch:desktop      # watch src/electron/server and auto-deploy on save
+```
+
+`watch:desktop` debounces changes (default 1500ms) so a rebuild only kicks off
+after you stop typing, and queues a follow-up rebuild if you save again
+during the in-flight build — so the Desktop icon always ends up reflecting
+your latest commit. Each rebuild takes ~10-15 seconds.
+
+For tighter inner-loop iteration while actively coding, prefer
+`npm run electron:dev` — it runs the same Electron window against the live
+Vite dev server with hot reload (sub-second updates, no repackaging).
+
 ## How the SSH terminal works
 
 - Each SSH tab renders an xterm.js terminal.

@@ -10,6 +10,27 @@ let activeDrag: ActiveDrag = null
 
 type Protocol = 'SSH' | 'RDP' | 'VNC' | 'Telnet' | 'HTTP' | 'HTTPS' | 'Custom'
 
+const FOLDER_PASTEL_HUES = [210, 340, 145, 45, 270, 25, 175, 305, 90, 0, 250, 195]
+
+function folderTintHue(folder: string): number {
+  if (!folder) return 210
+  let hash = 0
+  for (let i = 0; i < folder.length; i++) {
+    hash = (hash * 31 + folder.charCodeAt(i)) >>> 0
+  }
+  return FOLDER_PASTEL_HUES[hash % FOLDER_PASTEL_HUES.length]
+}
+
+function folderTintBg(folder: string, alpha = 0.16): string {
+  const hue = folderTintHue(folder)
+  return `hsla(${hue}, 75%, 62%, ${alpha})`
+}
+
+function folderTintDot(folder: string): string {
+  const hue = folderTintHue(folder)
+  return `hsl(${hue}, 75%, 64%)`
+}
+
 type Connection = {
   id: string
   name: string
@@ -294,6 +315,16 @@ function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
   const [deleteTargetId, setDeleteTargetId] = useState<string>('')
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  type BulkDeleteMode = 'all' | 'selected' | 'folder'
+  const [bulkDelete, setBulkDelete] = useState<{
+    mode: BulkDeleteMode
+    targetIds: string[]
+    folderName?: string
+    step: 1 | 2
+    text: string
+  } | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedConnectionIds, setSelectedConnectionIds] = useState<Set<string>>(new Set())
   const [pendingPasswordSave, setPendingPasswordSave] = useState<{
     connectionId: string
     password: string
@@ -633,6 +664,117 @@ function App() {
 
   const deleteTarget = connections.find((connection) => connection.id === deleteTargetId)
 
+  const requestDeleteAll = () => {
+    if (connections.length === 0) return
+    setBulkDelete({
+      mode: 'all',
+      targetIds: connections.map((c) => c.id),
+      step: 1,
+      text: '',
+    })
+  }
+
+  const requestDeleteSelected = () => {
+    const ids = Array.from(selectedConnectionIds).filter((id) =>
+      connections.some((c) => c.id === id),
+    )
+    if (ids.length === 0) return
+    setBulkDelete({ mode: 'selected', targetIds: ids, step: 1, text: '' })
+  }
+
+  const requestDeleteFolderWithContents = (folder: string) => {
+    const ids = connections.filter((c) => c.group === folder).map((c) => c.id)
+    setBulkDelete({
+      mode: 'folder',
+      targetIds: ids,
+      folderName: folder,
+      step: 1,
+      text: '',
+    })
+  }
+
+  const cancelBulkDelete = () => setBulkDelete(null)
+
+  const advanceBulkDelete = () => {
+    if (!bulkDelete) return
+    if (bulkDelete.step === 1) {
+      if (bulkDelete.text.trim().toLowerCase() !== 'delete') return
+      setBulkDelete({ ...bulkDelete, step: 2, text: '' })
+      return
+    }
+    if (bulkDelete.text.trim().toLowerCase() !== 'sure') return
+
+    const idSet = new Set(bulkDelete.targetIds)
+    const removed = bulkDelete.targetIds.length
+    setConnections((current) => current.filter((c) => !idSet.has(c.id)))
+    setTabs((current) => current.filter((tab) => !idSet.has(tab.connectionId)))
+    if (idSet.has(selectedId)) {
+      setSelectedId('')
+      setDraft(DEFAULT_DRAFT)
+      setIsCreating(false)
+    }
+    if (bulkDelete.mode === 'all') {
+      setActiveTabId('')
+    }
+    setSelectedConnectionIds((current) => {
+      const next = new Set<string>()
+      current.forEach((id) => {
+        if (!idSet.has(id)) next.add(id)
+      })
+      return next
+    })
+    if (bulkDelete.mode === 'folder' && bulkDelete.folderName) {
+      const folderName = bulkDelete.folderName
+      setFolders((current) => current.filter((f) => f !== folderName))
+      if (collapsedFolders.has(folderName)) {
+        setCollapsedFolders((current) => {
+          const next = new Set(current)
+          next.delete(folderName)
+          return next
+        })
+      }
+    }
+    setNotice(
+      bulkDelete.mode === 'all'
+        ? `Deleted all ${removed} connection${removed === 1 ? '' : 's'}.`
+        : bulkDelete.mode === 'folder'
+          ? `Deleted folder "${bulkDelete.folderName}" (${removed} connection${
+              removed === 1 ? '' : 's'
+            }).`
+          : `Deleted ${removed} selected connection${removed === 1 ? '' : 's'}.`,
+    )
+    cancelBulkDelete()
+  }
+
+  const toggleSelectMode = () => {
+    setSelectMode((current) => {
+      if (current) setSelectedConnectionIds(new Set())
+      return !current
+    })
+  }
+
+  const toggleConnectionSelection = (id: string) => {
+    setSelectedConnectionIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const setGroupSelection = (groupConnectionIds: string[], shouldSelect: boolean) => {
+    setSelectedConnectionIds((current) => {
+      const next = new Set(current)
+      groupConnectionIds.forEach((id) => {
+        if (shouldSelect) next.add(id)
+        else next.delete(id)
+      })
+      return next
+    })
+  }
+
+  const clearSelection = () => setSelectedConnectionIds(new Set())
+
   const duplicateConnection = (sourceId: string) => {
     const source = connections.find((connection) => connection.id === sourceId)
     if (!source) return
@@ -781,9 +923,47 @@ function App() {
               <button type="button" onClick={() => setShowNewFolder(true)} title="Create a new folder">
                 + Folder
               </button>
+              <button
+                type="button"
+                className={selectMode ? 'is-active' : ''}
+                onClick={toggleSelectMode}
+                title={
+                  selectMode
+                    ? 'Exit selection mode'
+                    : 'Show checkboxes so you can select connections to delete'
+                }
+              >
+                {selectMode ? 'Done' : 'Select'}
+              </button>
               <span className="panel-count">{connections.length}</span>
             </div>
           </div>
+          {selectMode && (
+            <div className="selection-bar" role="region" aria-label="Bulk selection">
+              <span>
+                <strong>{selectedConnectionIds.size}</strong> selected
+              </span>
+              <div className="selection-bar-actions">
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  disabled={selectedConnectionIds.size === 0}
+                  title="Clear selection"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={selectedConnectionIds.size === 0}
+                  onClick={requestDeleteSelected}
+                  title="Delete the selected connections (requires two confirmations)"
+                >
+                  Delete selected
+                </button>
+              </div>
+            </div>
+          )}
           <input
             className="search"
             placeholder="Search host, name, protocol..."
@@ -794,9 +974,37 @@ function App() {
           <div className="connection-tree">
             {Object.entries(groupedConnections).map(([group, items]) => {
               const isCollapsed = collapsedFolders.has(group) && !search.trim()
+              const itemIds = items.map((c) => c.id)
+              const selectedInGroup = itemIds.filter((id) => selectedConnectionIds.has(id)).length
+              const allSelectedInGroup = items.length > 0 && selectedInGroup === items.length
+              const someSelectedInGroup = selectedInGroup > 0 && !allSelectedInGroup
               return (
-              <section className="connection-group" key={group}>
+              <section
+                className="connection-group"
+                key={group}
+                style={{
+                  ['--folder-tint' as string]: folderTintBg(group),
+                  ['--folder-tint-strong' as string]: folderTintBg(group, 0.3),
+                  ['--folder-dot' as string]: folderTintDot(group),
+                }}
+              >
                 <header className="connection-group-header">
+                  {selectMode && items.length > 0 && (
+                    <input
+                      type="checkbox"
+                      className="folder-select-checkbox"
+                      aria-label={`Select all in folder ${group}`}
+                      title={`Select all ${items.length} connection${items.length === 1 ? '' : 's'} in ${group}`}
+                      checked={allSelectedInGroup}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someSelectedInGroup
+                      }}
+                      onChange={(event) =>
+                        setGroupSelection(itemIds, event.target.checked)
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                    />
+                  )}
                   <button
                     type="button"
                     className="connection-group-toggle"
@@ -805,9 +1013,13 @@ function App() {
                     aria-expanded={!isCollapsed}
                   >
                     <span className={`chevron ${isCollapsed ? 'chevron-right' : 'chevron-down'}`} aria-hidden="true" />
+                    <span className="folder-dot" aria-hidden="true" />
                     <h2>{group}</h2>
                   </button>
                   <div className="connection-group-actions">
+                    {selectMode && selectedInGroup > 0 && (
+                      <span className="connection-group-selected">{selectedInGroup}/{items.length}</span>
+                    )}
                     <span className="connection-group-count">{items.length}</span>
                     <button
                       type="button"
@@ -821,14 +1033,25 @@ function App() {
                     >
                       +
                     </button>
-                    {items.length === 0 && (
+                    {items.length === 0 ? (
                       <button
                         type="button"
                         className="danger"
                         title={`Delete empty folder ${group}`}
                         onClick={() => requestDeleteFolder(group)}
                       >
-                        x
+                        🗑
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="danger folder-trash"
+                        title={`Delete folder ${group} and its ${items.length} connection${
+                          items.length === 1 ? '' : 's'
+                        } (requires two confirmations)`}
+                        onClick={() => requestDeleteFolderWithContents(group)}
+                      >
+                        🗑
                       </button>
                     )}
                   </div>
@@ -837,18 +1060,38 @@ function App() {
                   <p className="connection-group-empty">No connections in this folder yet.</p>
                 )}
                 {!isCollapsed &&
-                  items.map((connection) => (
+                  items.map((connection) => {
+                    const isChecked = selectedConnectionIds.has(connection.id)
+                    return (
                     <div
-                      className={`connection-item ${selectedId === connection.id ? 'selected' : ''}`}
+                      className={`connection-item ${selectedId === connection.id ? 'selected' : ''} ${
+                        selectMode ? 'select-mode' : ''
+                      } ${isChecked ? 'is-checked' : ''}`}
                       key={connection.id}
-                      onClick={() => selectConnection(connection)}
-                      onDoubleClick={() => openConnectionTab(connection.id)}
+                      onClick={() => {
+                        if (selectMode) toggleConnectionSelection(connection.id)
+                        else selectConnection(connection)
+                      }}
+                      onDoubleClick={() => {
+                        if (!selectMode) openConnectionTab(connection.id)
+                      }}
                       onContextMenu={(event) => {
+                        if (selectMode) return
                         event.preventDefault()
                         selectConnection(connection)
                         duplicateConnection(connection.id)
                       }}
                     >
+                      {selectMode && (
+                        <input
+                          type="checkbox"
+                          className="row-select-checkbox"
+                          aria-label={`Select ${connection.name}`}
+                          checked={isChecked}
+                          onChange={() => toggleConnectionSelection(connection.id)}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                      )}
                       <span className="connection-color" style={{ background: connection.color }} />
                       <span className="connection-item-body">
                         <strong>{connection.name}</strong>
@@ -890,7 +1133,8 @@ function App() {
                         </button>
                       </span>
                     </div>
-                  ))}
+                    )
+                  })}
               </section>
               )
             })}
@@ -985,6 +1229,40 @@ function App() {
                     }}
                   >
                     {inspectorVisible ? 'Hide settings panel' : 'Show settings panel'}
+                  </button>
+                  <div className="app-menu-separator" aria-hidden="true" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAppMenuOpen(false)
+                      if (!selectMode) toggleSelectMode()
+                    }}
+                    disabled={selectMode}
+                    title={
+                      selectMode
+                        ? 'Already in select mode'
+                        : 'Show checkboxes next to each connection so you can pick and delete several at once'
+                    }
+                  >
+                    {selectMode ? 'Select mode is on' : 'Select connections…'}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="app-menu-danger"
+                    disabled={connections.length === 0}
+                    title={
+                      connections.length === 0
+                        ? 'No connections to delete'
+                        : `Delete all ${connections.length} connections (requires two confirmations)`
+                    }
+                    onClick={() => {
+                      setAppMenuOpen(false)
+                      requestDeleteAll()
+                    }}
+                  >
+                    Delete all connections{connections.length ? ` (${connections.length})` : ''}
                   </button>
                 </div>,
                 document.body,
@@ -1422,6 +1700,107 @@ function App() {
                 </button>
                 <button type="button" className="primary" onClick={confirmSavePassword} autoFocus>
                   Save password
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {bulkDelete && (() => {
+        const count = bulkDelete.targetIds.length
+        const noun = `${count} connection${count === 1 ? '' : 's'}`
+        const titleStep1 =
+          bulkDelete.mode === 'all'
+            ? `Delete all ${noun}?`
+            : bulkDelete.mode === 'folder'
+              ? `Delete folder "${bulkDelete.folderName}"?`
+              : `Delete ${noun}?`
+        const expected = bulkDelete.step === 1 ? 'delete' : 'sure'
+        const isValid = bulkDelete.text.trim().toLowerCase() === expected
+        return (
+          <div className="modal-backdrop" onClick={cancelBulkDelete}>
+            <div
+              className="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="bulk-delete-modal-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="modal-step-indicator" aria-hidden="true">
+                <span className={`step ${bulkDelete.step >= 1 ? 'active' : ''}`}>1</span>
+                <span className="step-bar" />
+                <span className={`step ${bulkDelete.step >= 2 ? 'active' : ''}`}>2</span>
+              </div>
+              <h2 id="bulk-delete-modal-title">
+                {bulkDelete.step === 1 ? titleStep1 : 'Are you absolutely sure?'}
+              </h2>
+              {bulkDelete.step === 1 ? (
+                <>
+                  <p>
+                    {bulkDelete.mode === 'folder' ? (
+                      <>
+                        You are about to permanently delete the folder{' '}
+                        <strong>{bulkDelete.folderName}</strong> and all{' '}
+                        <strong>{noun}</strong> inside it. Any open tab{count === 1 ? '' : 's'}{' '}
+                        connected to {count === 1 ? 'it' : 'them'} will be closed.
+                      </>
+                    ) : bulkDelete.mode === 'all' ? (
+                      <>
+                        You are about to permanently delete <strong>all {noun}</strong> and
+                        close every open tab. Folders are kept.
+                      </>
+                    ) : (
+                      <>
+                        You are about to permanently delete <strong>{noun}</strong> and close
+                        any related open tab{count === 1 ? '' : 's'}. Folders are kept.
+                      </>
+                    )}{' '}
+                    This action cannot be undone.
+                  </p>
+                  <p className="modal-instruction">
+                    Type <code>delete</code> to continue to the final confirmation.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Final check. {noun.charAt(0).toUpperCase() + noun.slice(1)} will be
+                    removed the moment you click the red button. There is no undo.
+                  </p>
+                  <p className="modal-instruction">
+                    Type <code>sure</code> below to confirm and permanently delete.
+                  </p>
+                </>
+              )}
+              <input
+                autoFocus
+                key={bulkDelete.step}
+                value={bulkDelete.text}
+                onChange={(event) =>
+                  setBulkDelete((current) =>
+                    current ? { ...current, text: event.target.value } : current,
+                  )
+                }
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && isValid) advanceBulkDelete()
+                  if (event.key === 'Escape') cancelBulkDelete()
+                }}
+                placeholder={`Type '${expected}' to ${
+                  bulkDelete.step === 1 ? 'continue' : 'confirm'
+                }`}
+              />
+              <div className="modal-actions">
+                <button type="button" onClick={cancelBulkDelete}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={bulkDelete.step === 1 ? 'primary' : 'danger'}
+                  disabled={!isValid}
+                  onClick={advanceBulkDelete}
+                >
+                  {bulkDelete.step === 1 ? 'Continue' : `Delete ${noun}`}
                 </button>
               </div>
             </div>
